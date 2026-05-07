@@ -258,7 +258,7 @@ async def handle_range(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        download_youtube_slice(query, start, end, audio_path)
+        download_soundcloud_slice(query, start, end, audio_path)
         await update.message.reply_text("🎬 Rendering video...")
         render_video(audio_path, lyrics, start, video_path)
 
