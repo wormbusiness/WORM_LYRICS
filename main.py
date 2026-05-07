@@ -1,23 +1,52 @@
 import os
 import re
+import subprocess
 import requests
 import numpy as np
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from moviepy.editor import AudioFileClip, ImageClip, CompositeVideoClip
+import imageio_ffmpeg
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    ConversationHandler, filters, ContextTypes
+)
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 OUTPUT_DIR     = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-W, H       = 1080, 1920
-BG_COLOR   = (15, 15, 15)
-HI_COLOR   = (255, 45, 85)    # TikTok red
-DIM_COLOR  = (136, 136, 136)
-FONTSIZE   = 52
-FONT_PATH  = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()  # bundled ffmpeg, no install needed
+
+W, H      = 1080, 1920
+BG_COLOR  = (15, 15, 15)
+HI_COLOR  = (255, 45, 85)
+DIM_COLOR = (136, 136, 136)
+FONTSIZE  = 52
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+# Conversation states
+WAITING_RANGE = 1
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def parse_timestamp(ts: str) -> float:
+    """Convert m:ss or mm:ss to seconds."""
+    parts = ts.strip().split(":")
+    return int(parts[0]) * 60 + float(parts[1])
+
+def parse_range(text: str) -> tuple[float, float]:
+    """Parse '0:45-1:15' into (45.0, 75.0)."""
+    m = re.match(r"(\d+:\d+(?:\.\d+)?)\s*[-–]\s*(\d+:\d+(?:\.\d+)?)", text.strip())
+    if not m:
+        raise ValueError("Format must be `m:ss-m:ss`, e.g. `0:45-1:15`")
+    start = parse_timestamp(m.group(1))
+    end   = parse_timestamp(m.group(2))
+    if end <= start:
+        raise ValueError("End time must be after start time.")
+    if end - start > 60:
+        raise ValueError("Max clip length is 60 seconds.")
+    return start, end
 
 # ── Lyrics ─────────────────────────────────────────────────────────────────────
 def fetch_lyrics(query: str) -> dict:
@@ -42,25 +71,43 @@ def parse_lrc(synced: str) -> list[dict]:
                 lines.append({"t": round(ts, 2), "text": text.strip()})
     return lines
 
-# ── Deezer Audio ───────────────────────────────────────────────────────────────
-def fetch_deezer_preview(query: str) -> str:
-    r = requests.get("https://api.deezer.com/search", params={"q": query, "limit": 1}, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    if not data.get("data"):
-        raise ValueError("No audio found on Deezer.")
-    track = data["data"][0]
-    if not track.get("preview"):
-        raise ValueError("Deezer track has no preview available.")
-    return track["preview"]
+# ── YouTube Audio ──────────────────────────────────────────────────────────────
+def download_youtube_slice(query: str, start: float, end: float, out_path: Path) -> Path:
+    """Download only the needed slice from YouTube using yt-dlp + bundled ffmpeg."""
+    duration = end - start
+    tmp = out_path.with_suffix(".raw.mp3")
 
-def download_preview(url: str, out_path: Path) -> Path:
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    out_path.write_bytes(r.content)
+    cmd = [
+        "yt-dlp",
+        f"ytsearch1:{query}",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",
+        "--download-sections", f"*{start}-{end}",
+        "--force-keyframes-at-cuts",
+        "--no-playlist",
+        "--ffmpeg-location", FFMPEG_BIN,
+        "-o", str(tmp),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ValueError(f"yt-dlp error: {result.stderr[-400:]}")
+
+    # Trim precisely with ffmpeg in case yt-dlp overshot
+    trim_cmd = [
+        FFMPEG_BIN, "-y",
+        "-i", str(tmp),
+        "-t", str(duration),
+        "-acodec", "copy",
+        str(out_path)
+    ]
+    subprocess.run(trim_cmd, capture_output=True)
+    if tmp.exists():
+        tmp.unlink()
+
     return out_path
 
-# ── Text Rendering with Pillow ─────────────────────────────────────────────────
+# ── Text Rendering ─────────────────────────────────────────────────────────────
 def load_font(size: int) -> ImageFont.FreeTypeFont:
     try:
         return ImageFont.truetype(FONT_PATH, size)
@@ -68,13 +115,11 @@ def load_font(size: int) -> ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-    """Word-wrap text to fit within max_width pixels."""
     words = text.split()
     lines, current = [], ""
     for word in words:
         test = f"{current} {word}".strip()
-        bbox = font.getbbox(test)
-        if bbox[2] <= max_width:
+        if font.getbbox(test)[2] <= max_width:
             current = test
         else:
             if current:
@@ -85,53 +130,54 @@ def wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[s
     return lines
 
 def make_frame(active: str, upcoming: str | None) -> np.ndarray:
-    """Render a single video frame as numpy array."""
     img  = Image.new("RGB", (W, H), BG_COLOR)
     draw = ImageDraw.Draw(img)
     font = load_font(FONTSIZE)
     dim  = load_font(int(FONTSIZE * 0.85))
+    margin, max_w = 60, W - 120
 
-    margin = 60
-    max_w  = W - margin * 2
-
-    # Active lyric line (center)
     a_lines = wrap_text(active, font, max_w)
     line_h  = FONTSIZE + 10
-    total_h = len(a_lines) * line_h
-    y = H // 2 - total_h // 2 - 60
+    y = H // 2 - (len(a_lines) * line_h) // 2 - 60
     for ln in a_lines:
-        bbox = font.getbbox(ln)
-        x = (W - (bbox[2] - bbox[0])) // 2
+        x = (W - font.getbbox(ln)[2]) // 2
         draw.text((x, y), ln, font=font, fill=HI_COLOR)
         y += line_h
 
-    # Upcoming line (dimmed, below)
     if upcoming:
         y += 30
         for ln in wrap_text(upcoming, dim, max_w):
-            bbox = dim.getbbox(ln)
-            x = (W - (bbox[2] - bbox[0])) // 2
+            x = (W - dim.getbbox(ln)[2]) // 2
             draw.text((x, y), ln, font=dim, fill=DIM_COLOR)
             y += int(FONTSIZE * 0.85) + 8
 
     return np.array(img)
 
 # ── Video Rendering ────────────────────────────────────────────────────────────
-def render_video(audio_path: Path, lyrics: list[dict], out_path: Path) -> Path:
+def render_video(audio_path: Path, lyrics: list[dict], start: float, out_path: Path) -> Path:
     audio   = AudioFileClip(str(audio_path))
     dur     = audio.duration
-    visible = [l for l in lyrics if l["t"] < dur]
+
+    # Shift lyrics to be relative to clip start
+    visible = [
+        {"t": max(l["t"] - start, 0), "text": l["text"]}
+        for l in lyrics
+        if start <= l["t"] < start + dur + 2
+    ]
 
     clips = []
     for i, line in enumerate(visible):
-        start    = line["t"]
-        end      = visible[i + 1]["t"] if i + 1 < len(visible) else dur
-        line_dur = max(end - start, 0.1)
+        ls    = line["t"]
+        le    = visible[i + 1]["t"] if i + 1 < len(visible) else dur
+        ld    = max(le - ls, 0.1)
+        if ls >= dur:
+            continue
         upcoming = visible[i + 1]["text"] if i + 1 < len(visible) else None
-
         frame = make_frame(line["text"], upcoming)
-        clip  = ImageClip(frame).set_start(start).set_duration(line_dur)
-        clips.append(clip)
+        clips.append(ImageClip(frame).set_start(ls).set_duration(ld))
+
+    if not clips:
+        raise ValueError("No lyrics found in the selected time range.")
 
     video = CompositeVideoClip(clips, size=(W, H)).set_audio(audio)
     video.write_videofile(
@@ -157,27 +203,33 @@ async def handle_query(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         artist = track.get("artistName", "Unknown")
         dur    = track.get("duration", 0)
         mins, secs = divmod(int(dur), 60)
+
         preview = "\n".join(
-            f"`[{int(l['t']//60)}:{l['t']%60:05.2f}]` {l['text']}"
-            for l in lyrics[:5]
+            f"`[{int(l['t']//60)}:{int(l['t']%60):02d}]` {l['text']}"
+            for l in lyrics[:8]
         )
         ctx.user_data.update({"track": track, "lyrics": lyrics, "query": query})
         await update.message.reply_text(
-            f"✅ *{title}* — {artist}\n⏱ {mins}:{secs:02d} | {len(lyrics)} synced lines\n\n"
-            f"{preview}\n{'...' if len(lyrics) > 5 else ''}\n\n"
-            f"Send /confirm to render a preview 🎬",
+            f"✅ *{title}* — {artist}\n⏱ Full song: {mins}:{secs:02d}\n\n"
+            f"*First lines:*\n{preview}\n{'...' if len(lyrics) > 8 else ''}\n\n"
+            f"Reply with the time range you want, e.g. `0:45-1:15`",
             parse_mode="Markdown"
         )
+        return WAITING_RANGE
     except Exception as e:
         await update.message.reply_text(f"❌ {e}")
+        return ConversationHandler.END
 
-async def confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def handle_range(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     track  = ctx.user_data.get("track")
     lyrics = ctx.user_data.get("lyrics")
     query  = ctx.user_data.get("query", "")
-    if not track or not lyrics:
-        await update.message.reply_text("No song queued. Send a song name first.")
-        return
+
+    try:
+        start, end = parse_range(update.message.text)
+    except ValueError as e:
+        await update.message.reply_text(f"❌ {e}\nTry again, e.g. `0:45-1:15`", parse_mode="Markdown")
+        return WAITING_RANGE
 
     title  = track.get("trackName", "unknown")
     artist = track.get("artistName", "unknown")
@@ -185,13 +237,17 @@ async def confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     audio_path = OUTPUT_DIR / f"{slug}.mp3"
     video_path = OUTPUT_DIR / f"{slug}.mp4"
 
-    try:
-        await update.message.reply_text("🎧 Fetching Deezer audio...")
-        url = fetch_deezer_preview(query)
-        download_preview(url, audio_path)
+    sm, ss = divmod(int(start), 60)
+    em, es = divmod(int(end), 60)
+    await update.message.reply_text(
+        f"⏱ Clipping `{sm}:{ss:02d}` → `{em}:{es:02d}` ({int(end-start)}s)\n🎧 Downloading audio...",
+        parse_mode="Markdown"
+    )
 
-        await update.message.reply_text("🎬 Rendering video (~1 min)...")
-        render_video(audio_path, lyrics, video_path)
+    try:
+        download_youtube_slice(query, start, end, audio_path)
+        await update.message.reply_text("🎬 Rendering video...")
+        render_video(audio_path, lyrics, start, video_path)
 
         await update.message.reply_text("📤 Sending preview...")
         with open(video_path, "rb") as vf:
@@ -201,20 +257,22 @@ async def confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 supports_streaming=True,
                 parse_mode="Markdown"
             )
-        ctx.user_data["video_path"] = str(video_path)
-        ctx.user_data["tiktok_caption"] = f"{title} - {artist} #lyrics #fyp #{artist.replace(' ', '').lower()}"
+        ctx.user_data["video_path"]      = str(video_path)
+        ctx.user_data["tiktok_caption"]  = f"{title} - {artist} #lyrics #fyp #{artist.replace(' ', '').lower()}"
     except Exception as e:
         await update.message.reply_text(f"❌ {e}")
     finally:
         if audio_path.exists():
             audio_path.unlink()
 
+    return ConversationHandler.END
+
 async def post(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     video_path = ctx.user_data.get("video_path")
     if not video_path or not Path(video_path).exists():
-        await update.message.reply_text("No video ready. Run /confirm first.")
+        await update.message.reply_text("No video ready. Send a song first.")
         return
-    await update.message.reply_text("🚀 TikTok upload coming in next step!")
+    await update.message.reply_text("🚀 TikTok upload coming next!")
 
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     vp = ctx.user_data.get("video_path")
@@ -222,14 +280,21 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         Path(vp).unlink()
     ctx.user_data.clear()
     await update.message.reply_text("🗑 Discarded. Send a new song anytime.")
+    return ConversationHandler.END
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start",   start))
-    app.add_handler(CommandHandler("confirm", confirm))
-    app.add_handler(CommandHandler("post",    post))
-    app.add_handler(CommandHandler("cancel",  cancel))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query))
+
+    conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.TEXT & ~filters.COMMAND, handle_query)],
+        states={WAITING_RANGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_range)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    app.add_handler(CommandHandler("start",  start))
+    app.add_handler(CommandHandler("post",   post))
+    app.add_handler(CommandHandler("cancel", cancel))
+    app.add_handler(conv)
     print("Bot running...")
     app.run_polling()
