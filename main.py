@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from moviepy.editor import AudioFileClip, ImageClip, CompositeVideoClip
 import imageio_ffmpeg
+from pytubefix import Search
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -73,48 +74,40 @@ def parse_lrc(synced: str) -> list[dict]:
 
 # ── YouTube Audio ──────────────────────────────────────────────────────────────
 def download_youtube_slice(query: str, start: float, end: float, out_path: Path) -> Path:
-    """Download only the needed slice from YouTube using yt-dlp + bundled ffmpeg."""
+    """Search YouTube, download audio stream, trim to range with ffmpeg."""
     duration = end - start
-    # Use %(ext)s so yt-dlp names it correctly regardless of format
-    tmp_template = str(out_path.parent / (out_path.stem + ".raw.%(ext)s"))
 
-    cmd = [
-        "yt-dlp",
-        f"ytsearch1:{query}",
-        "--extract-audio",
-        "--audio-format", "mp3",
-        "--audio-quality", "0",
-        "--download-sections", f"*{start}-{end}",
-        "--force-keyframes-at-cuts",
-        "--no-playlist",
-        "--ffmpeg-location", FFMPEG_BIN,
-        "--js-runtimes", "nodejs",
-        "-o", tmp_template,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise ValueError(f"yt-dlp error: {result.stderr[-400:]}")
+    # Search and grab first result
+    results = Search(query).videos
+    if not results:
+        raise ValueError("No YouTube results found.")
+    yt = results[0]
 
-    # Find whatever file yt-dlp actually created
-    matches = list(out_path.parent.glob(out_path.stem + ".raw.*"))
-    if not matches:
-        raise ValueError("yt-dlp finished but no output file found.")
-    tmp = matches[0]
+    # Get best audio-only stream
+    stream = yt.streams.get_audio_only()
+    if not stream:
+        raise ValueError("No audio stream available for this video.")
 
-    # Convert to mp3 with ffmpeg
+    # Download full audio to temp file
+    tmp = out_path.with_suffix(".raw.mp4")
+    stream.download(filename=str(tmp))
+
+    # Trim to exact range using bundled ffmpeg
     trim_cmd = [
         FFMPEG_BIN, "-y",
         "-i", str(tmp),
+        "-ss", str(start),
         "-t", str(duration),
+        "-vn",
         "-acodec", "libmp3lame",
-        "-q:a", "2",
+        "-q:a", "0",
         str(out_path)
     ]
-    r = subprocess.run(trim_cmd, capture_output=True, text=True)
+    result = subprocess.run(trim_cmd, capture_output=True, text=True)
     if tmp.exists():
         tmp.unlink()
-    if r.returncode != 0:
-        raise ValueError(f"ffmpeg trim error: {r.stderr[-300:]}")
+    if result.returncode != 0:
+        raise ValueError(f"ffmpeg trim error: {result.stderr[-300:]}")
 
     return out_path
 
