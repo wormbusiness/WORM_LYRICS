@@ -87,6 +87,7 @@ def download_youtube_slice(query: str, start: float, end: float, out_path: Path)
         "--force-keyframes-at-cuts",
         "--no-playlist",
         "--ffmpeg-location", FFMPEG_BIN,
+        "--js-runtimes", "nodejs",
         "-o", str(tmp),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
