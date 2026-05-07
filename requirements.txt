@@ -1,0 +1,6 @@
+python-telegram-bot==21.3
+moviepy==1.0.3
+yt-dlp
+requests
+numpy
+tiktok-uploader
