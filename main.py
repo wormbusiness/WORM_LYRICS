@@ -98,6 +98,7 @@ def download_youtube_slice(query: str, start: float, end: float, out_path: Path)
         "--force-keyframes-at-cuts",
         "--no-playlist",
         "--ffmpeg-location", ffmpeg,
+        "--cookies", "yt_cookies.json",
         "--js-runtimes", f"deno:{deno}",
         "-o", str(tmp),
     ]
