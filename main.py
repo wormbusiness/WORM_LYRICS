@@ -47,16 +47,22 @@ def fetch_lyrics(title: str, artist: str) -> list[dict]:
 # ── Audio ─────────────────────────────────────────────────────────────────────
 def download_audio(query: str, out_path: Path) -> Path:
     """Downloads best audio via yt-dlp and converts to mp3."""
+    # yt-dlp adds extension itself, so strip it from the template
+    template = str(out_path).replace(".mp3", ".%(ext)s")
     cmd = [
         "yt-dlp",
         f"ytsearch1:{query}",
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "0",
-        "-o", str(out_path),
+        "-o", template,
         "--no-playlist",
+        "--no-check-certificate",
+        "--retries", "5",
     ]
-    subprocess.run(cmd, check=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ValueError(f"yt-dlp failed: {result.stderr[-300:]}")
     return out_path
 
 # ── Video Rendering ───────────────────────────────────────────────────────────
