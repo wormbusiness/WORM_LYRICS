@@ -23,11 +23,21 @@ def find_bin(name: str) -> str:
     result = subprocess.run(["which", name], capture_output=True, text=True)
     if result.returncode == 0:
         return result.stdout.strip()
-    # Common nix store locations
-    for path in [f"/nix/var/nix/profiles/default/bin/{name}", f"/usr/bin/{name}", f"/usr/local/bin/{name}"]:
+    for path in [
+        f"/nix/var/nix/profiles/default/bin/{name}",
+        f"/run/current-system/sw/bin/{name}",
+        f"/usr/bin/{name}",
+        f"/usr/local/bin/{name}",
+    ]:
         if Path(path).exists():
             return path
-    return name  # fall back to bare name and hope it's in PATH
+    # Search nix store directly
+    nix = subprocess.run(["find", "/nix/store", "-name", name, "-type", "f"],
+                         capture_output=True, text=True)
+    hits = [l for l in nix.stdout.splitlines() if "/bin/" in l]
+    if hits:
+        return hits[0]
+    return name
 
 W, H      = 1080, 1920
 BG_COLOR  = (15, 15, 15)
@@ -98,7 +108,7 @@ def download_youtube_slice(query: str, start: float, end: float, out_path: Path)
         "--force-keyframes-at-cuts",
         "--no-playlist",
         "--ffmpeg-location", ffmpeg,
-        "--cookies", "yt_cookies.json",
+        "--cookies", "yt_cookies.txt",
         "--js-runtimes", f"deno:{deno}",
         "-o", str(tmp),
     ]
