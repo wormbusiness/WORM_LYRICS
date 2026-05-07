@@ -3,3 +3,5 @@ requests
 moviepy==1.0.3
 numpy
 Pillow
+yt-dlp
+imageio-ffmpeg
