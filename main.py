@@ -11,7 +11,6 @@ from tiktok_uploader.upload import upload_video
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TIKTOK_SESSION = os.environ["TIKTOK_SESSION_ID"]  # from browser cookies
 OUTPUT_DIR     = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -124,7 +123,7 @@ def post_to_tiktok(video_path: Path, caption: str):
     upload_video(
         str(video_path),
         description=caption,
-        sessionid=TIKTOK_SESSION,
+        cookies="cookies.json",   # full cookies file in project root
         headless=True,
     )
 
