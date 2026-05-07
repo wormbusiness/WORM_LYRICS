@@ -100,7 +100,7 @@ def download_youtube_slice(query: str, start: float, end: float, out_path: Path)
 
     cmd = [
         "python", "-m", "yt_dlp",
-        f"ytsearch1:{query}",
+        f"scsearch1:{query}",
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "0",
