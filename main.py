@@ -17,7 +17,14 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # ── Lyrics ────────────────────────────────────────────────────────────────────
 def fetch_lyrics(title: str, artist: str) -> list[dict]:
     """Returns list of {timestamp, text} dicts from lrclib."""
-    r = requests.get("https://lrclib.net/api/search", params={"q": f"{artist} {title}"}, timeout=10)
+    for attempt in range(3):
+        try:
+            r = requests.get("https://lrclib.net/api/search", params={"q": f"{artist} {title}"}, timeout=30)
+            break
+        except requests.Timeout:
+            if attempt == 2:
+                raise ValueError("Lyrics service timed out after 3 attempts. Try again.")
+    
     r.raise_for_status()
     results = r.json()
     if not results:
