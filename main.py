@@ -45,10 +45,21 @@ def fetch_lyrics(title: str, artist: str) -> list[dict]:
     return lines
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
+def find_ffmpeg() -> str:
+    """Locate ffmpeg binary on the system."""
+    result = subprocess.run(["which", "ffmpeg"], capture_output=True, text=True)
+    if result.returncode == 0:
+        return result.stdout.strip()
+    # Common nix store paths
+    for path in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/nix/var/nix/profiles/default/bin/ffmpeg"]:
+        if Path(path).exists():
+            return path
+    raise ValueError("ffmpeg not found. Check nixpacks.toml includes ffmpeg.")
+
 def download_audio(query: str, out_path: Path) -> Path:
     """Downloads best audio via yt-dlp and converts to mp3."""
-    # yt-dlp adds extension itself, so strip it from the template
     template = str(out_path).replace(".mp3", ".%(ext)s")
+    ffmpeg = find_ffmpeg()
     cmd = [
         "yt-dlp",
         f"ytsearch1:{query}",
@@ -59,11 +70,11 @@ def download_audio(query: str, out_path: Path) -> Path:
         "--no-playlist",
         "--no-check-certificate",
         "--retries", "5",
-        "--ffmpeg-location", "/usr/bin/ffmpeg",
+        "--ffmpeg-location", ffmpeg,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise ValueError(f"yt-dlp failed: {result.stderr[-300:]}")
+        raise ValueError(f"yt-dlp failed: {result.stderr[-500:]}")
     return out_path
 
 # ── Video Rendering ───────────────────────────────────────────────────────────
