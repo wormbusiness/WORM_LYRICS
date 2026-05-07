@@ -59,6 +59,7 @@ def download_audio(query: str, out_path: Path) -> Path:
         "--no-playlist",
         "--no-check-certificate",
         "--retries", "5",
+        "--ffmpeg-location", "/usr/bin/ffmpeg",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
