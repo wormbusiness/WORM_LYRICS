@@ -9,6 +9,13 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from moviepy.editor import AudioFileClip, ImageClip, TextClip, CompositeVideoClip
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+
+# Tell MoviePy where ImageMagick is
+from moviepy.config import change_settings
+import subprocess as _sp
+_im = _sp.run(["which", "convert"], capture_output=True, text=True).stdout.strip()
+if _im:
+    change_settings({"IMAGEMAGICK_BINARY": _im})
 OUTPUT_DIR     = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
