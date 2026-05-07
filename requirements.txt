@@ -1,6 +1,5 @@
 python-telegram-bot==21.10
 moviepy==1.0.3
-yt-dlp
 requests
 numpy
 tiktok-uploader
