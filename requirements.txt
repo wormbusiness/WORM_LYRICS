@@ -2,3 +2,4 @@ python-telegram-bot==21.10
 requests
 moviepy==1.0.3
 numpy
+Pillow
