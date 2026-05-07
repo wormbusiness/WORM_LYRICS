@@ -17,7 +17,17 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 OUTPUT_DIR     = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()  # bundled ffmpeg, no install needed
+FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
+
+def find_bin(name: str) -> str:
+    result = subprocess.run(["which", name], capture_output=True, text=True)
+    if result.returncode == 0:
+        return result.stdout.strip()
+    # Common nix store locations
+    for path in [f"/nix/var/nix/profiles/default/bin/{name}", f"/usr/bin/{name}", f"/usr/local/bin/{name}"]:
+        if Path(path).exists():
+            return path
+    return name  # fall back to bare name and hope it's in PATH
 
 W, H      = 1080, 1920
 BG_COLOR  = (15, 15, 15)
@@ -73,9 +83,10 @@ def parse_lrc(synced: str) -> list[dict]:
 
 # ── YouTube Audio ──────────────────────────────────────────────────────────────
 def download_youtube_slice(query: str, start: float, end: float, out_path: Path) -> Path:
-    """Download only the needed slice from YouTube using yt-dlp + bundled ffmpeg."""
-    duration = end - start
-    tmp = out_path.with_suffix(".raw.mp3")
+    """Download only the needed slice from YouTube using yt-dlp + system ffmpeg."""
+    tmp    = out_path.with_suffix(".raw.mp3")
+    ffmpeg = find_bin("ffmpeg")
+    deno   = find_bin("deno")
 
     cmd = [
         "python", "-m", "yt_dlp",
@@ -86,26 +97,19 @@ def download_youtube_slice(query: str, start: float, end: float, out_path: Path)
         "--download-sections", f"*{start}-{end}",
         "--force-keyframes-at-cuts",
         "--no-playlist",
-        "--ffmpeg-location", FFMPEG_BIN,
-        "--js-runtimes", "deno",
+        "--ffmpeg-location", ffmpeg,
+        "--js-runtimes", f"deno:{deno}",
         "-o", str(tmp),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise ValueError(f"yt-dlp error: {result.stderr[-400:]}")
 
-    # Trim precisely with ffmpeg in case yt-dlp overshot
-    trim_cmd = [
-        FFMPEG_BIN, "-y",
-        "-i", str(tmp),
-        "-t", str(duration),
-        "-acodec", "copy",
-        str(out_path)
-    ]
+    duration = end - start
+    trim_cmd = [ffmpeg, "-y", "-i", str(tmp), "-t", str(duration), "-acodec", "copy", str(out_path)]
     subprocess.run(trim_cmd, capture_output=True)
     if tmp.exists():
         tmp.unlink()
-
     return out_path
 
 # ── Text Rendering ─────────────────────────────────────────────────────────────
