@@ -2,7 +2,6 @@ import os
 import re
 import subprocess
 import requests
-from pytubefix import Search
 import numpy as np
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
@@ -74,37 +73,48 @@ def parse_lrc(synced: str) -> list[dict]:
 
 # ── YouTube Audio ──────────────────────────────────────────────────────────────
 def download_youtube_slice(query: str, start: float, end: float, out_path: Path) -> Path:
-    """Download full audio via pytubefix, then trim with bundled ffmpeg."""
-    results = Search(query).videos
-    if not results:
-        raise ValueError("No YouTube results found.")
-
-    video = results[0]
-    stream = video.streams.filter(only_audio=True).order_by("abr").last()
-    if not stream:
-        raise ValueError("No audio stream found on YouTube.")
-
-    # Download full audio to a temp file
-    tmp = out_path.with_suffix(".raw" + Path(stream.default_filename).suffix)
-    stream.download(filename=str(tmp))
-
-    # Trim to requested range with bundled ffmpeg
+    """Download only the needed slice from YouTube using yt-dlp + bundled ffmpeg."""
     duration = end - start
+    # Use %(ext)s so yt-dlp names it correctly regardless of format
+    tmp_template = str(out_path.parent / (out_path.stem + ".raw.%(ext)s"))
+
+    cmd = [
+        "yt-dlp",
+        f"ytsearch1:{query}",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "0",
+        "--download-sections", f"*{start}-{end}",
+        "--force-keyframes-at-cuts",
+        "--no-playlist",
+        "--ffmpeg-location", FFMPEG_BIN,
+        "--js-runtimes", "nodejs",
+        "-o", tmp_template,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise ValueError(f"yt-dlp error: {result.stderr[-400:]}")
+
+    # Find whatever file yt-dlp actually created
+    matches = list(out_path.parent.glob(out_path.stem + ".raw.*"))
+    if not matches:
+        raise ValueError("yt-dlp finished but no output file found.")
+    tmp = matches[0]
+
+    # Convert to mp3 with ffmpeg
     trim_cmd = [
         FFMPEG_BIN, "-y",
-        "-ss", str(start),
         "-i", str(tmp),
         "-t", str(duration),
-        "-vn",
         "-acodec", "libmp3lame",
         "-q:a", "2",
         str(out_path)
     ]
-    result = subprocess.run(trim_cmd, capture_output=True, text=True)
+    r = subprocess.run(trim_cmd, capture_output=True, text=True)
     if tmp.exists():
         tmp.unlink()
-    if result.returncode != 0:
-        raise ValueError(f"ffmpeg trim error: {result.stderr[-300:]}")
+    if r.returncode != 0:
+        raise ValueError(f"ffmpeg trim error: {r.stderr[-300:]}")
 
     return out_path
 
