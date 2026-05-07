@@ -96,7 +96,6 @@ def download_youtube_slice(query: str, start: float, end: float, out_path: Path)
     """Download only the needed slice from YouTube using yt-dlp + system ffmpeg."""
     tmp    = out_path.with_suffix(".raw.mp3")
     ffmpeg = find_bin("ffmpeg")
-    deno   = find_bin("deno")
 
     cmd = [
         "python", "-m", "yt_dlp",
@@ -108,8 +107,6 @@ def download_youtube_slice(query: str, start: float, end: float, out_path: Path)
         "--force-keyframes-at-cuts",
         "--no-playlist",
         "--ffmpeg-location", ffmpeg,
-        "--cookies", "yt_cookies.txt",
-        "--js-runtimes", f"deno:{deno}",
         "-o", str(tmp),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
