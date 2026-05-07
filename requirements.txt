@@ -3,5 +3,5 @@ requests
 moviepy==1.0.3
 numpy
 Pillow
-pytubefix
+yt-dlp
 imageio-ffmpeg
