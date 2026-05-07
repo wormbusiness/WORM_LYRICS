@@ -90,7 +90,7 @@ def download_youtube_slice(query: str, start: float, end: float, out_path: Path)
 
     # Download full audio to temp file
     tmp = out_path.with_suffix(".raw.mp4")
-    stream.download(filename=str(tmp))
+    stream.download(output_path=str(tmp.parent), filename=tmp.name)
 
     # Trim to exact range using bundled ffmpeg
     trim_cmd = [
