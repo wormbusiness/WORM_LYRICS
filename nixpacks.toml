@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["deno"]
+nixPkgs = ["deno", "ffmpeg"]
 
 [phases.install]
 cmds = ["pip install yt-dlp imageio-ffmpeg"]
